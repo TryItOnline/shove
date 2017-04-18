@@ -1,0 +1,152 @@
+#!/usr/bin/env perl
+# -*- cperl -*-
+# Shove interpreter. By Alex Smith.
+
+# Ørjan Johansen added -d (debugging) and -f (input from file or stdin) options.
+# Default without is now to take the program lines as command arguments.
+
+# Commands:
+# ' "     Quote a string ('' strings nest inside "" strings and vice versa)
+# < v > ^ Change direction of execution
+# A V ( ) Pop a string onto the playfield
+# space   NOP
+
+# !       NOP, but tells the compiler that everything behind the IP will
+#         never be used (a useful optimisation)
+# S       NOP, but outputs TOS (without popping) on systems with output
+# n       NOP, but outputs a newline on systems with output
+
+use strict;
+
+# Read in the program
+
+my $debug = ($#ARGV >= 0 and $ARGV[0] eq '-d' and shift and 1);
+my @program = ($#ARGV >= 0 and ($ARGV[0] ne '-f' or (shift and 0)))
+  ? @ARGV : <>;
+chomp for @program;
+
+my $x = 0;
+my $y = 0;
+my $width = 0; $width = ($width < length $_ ? length $_ : $width) for @program;
+my $height = scalar @program;
+my $totalrotation = 0;
+my @stack = ();
+# always going right, we rotate the program if necessary to ensure this
+
+# Pads its argument to width $width.
+sub widthpad {
+  my $s = shift;
+  return $s . (' ' x ($width - length $s));
+}
+
+# Rotates the program clockwise (arg = 1), 180 degrees (arg = 2),
+# or anticlockwise (arg = 3)
+sub rotateprogram {
+  my $amount = shift;
+  $amount or return;
+  $totalrotation += $amount;
+  $totalrotation %= 4;
+  if ($amount >= 2) {
+    @program = reverse @program;
+    $_ = reverse widthpad $_ for @program;
+    $x = $width - 1 - $x;
+    $y = $height - 1 - $y;
+    tr/<v>^AV()/>^<vVA)(/ for @program;
+    $amount == 2 and return;
+  } else {
+    $_ = widthpad $_ for @program;
+  }
+  my @newprog = ();
+  # We repeatedly move the leftmost column of @program to the top row
+  # of @newprog.
+  while (length $program[0]) {
+    my $build='';
+    $build = (substr $_, 0, 1, '') . $build for @program;
+    push @newprog, $build;
+  }
+  @program = @newprog;
+  tr/<^>v(A)V/^>v<A)V(/ for @program;
+  ($width, $height) = ($height, $width);
+  ($x, $y) = ($width - 1 - $y, $x);
+}
+
+sub shove {
+  my $sx = shift;
+  my $sy = shift;
+  if($sx < 0) {
+    $_ = ' '.$_ for @program;
+    $x++;
+    $sx++;
+    $width++;
+  }
+  if($sx >= $width) {
+    $width++;
+  }
+  if($sy < 0) {
+    unshift @program, "";
+    $y++;
+    $sy++;
+    $height++;
+  }
+  if($sy >= $height) {
+    push @program, "";
+    $height++;
+  }
+  scalar @stack or die "Empty stack when shoving.";
+  $program[$sy] = widthpad $program[$sy];
+  ($x > $sx && $y == $sy) and $x += length $stack[0];
+  substr $program[$sy], $sx, 0, shift @stack;
+  $program[$sy] =~ s/\ +$//;
+  $width < length $program[$sy] and $width = length $program[$sy];
+}
+
+sub showprogram {
+  my $tr = $totalrotation;
+  print "\nactual size: ($width, $height), pos: ($x, $y)\n";
+  rotateprogram ((4-$tr)%4);
+  $program[$y] = widthpad $program[$y];
+  my $c = substr $program[$y], $x, 1, '*';
+  print "rotated for viewing; pos: ($x, $y), dir: $tr\n";
+  print "stack: ";
+  print "{$_} " for @stack;
+  print "\n";
+  print "$_\n" for @program;
+  substr $program[$y], $x, 1, $c;
+  rotateprogram $tr;
+  scalar <STDIN>;
+}
+
+while ($x < $width && $y < $height && $x >= 0 && $y >= 0) {
+  showprogram if $debug;
+  my $cmd = substr $program[$y], $x, 1;
+  # $cmd eq '>' is a nop
+  $cmd eq '^' and rotateprogram 1;
+  $cmd eq '<' and rotateprogram 2;
+  $cmd eq 'v' and rotateprogram 3;
+  $cmd eq '(' and shove $x-1, $y;
+  $cmd eq ')' and shove $x+1, $y;
+  $cmd eq 'A' and shove $x, $y-1;
+  $cmd eq 'V' and shove $x, $y+1;
+  $cmd eq 'S' and print $stack[0];
+  $cmd eq 'n' and print '\n';
+  if ($cmd eq '!') {
+    substr $_, 0, $x, '' for @program;
+    $width -= $x;
+    $x = 0;
+  }
+  if ($cmd eq '"' || $cmd eq "'") {
+    my $quotecount = 1;
+    my $lws = $cmd eq "'";
+    my $newpush = "";
+    while($quotecount) {
+      $x++;
+      $x < $width or die "Unterminated string.";
+      $cmd = substr $program[$y], $x, 1;
+      $cmd eq "'" and ($quotecount += ($lws ? -1 : 1)), ($lws = !$lws);
+      $cmd eq '"' and ($quotecount += ($lws ? 1 : -1)), ($lws = !$lws);
+      $quotecount and $newpush .= $cmd;
+    }
+    unshift @stack, $newpush;
+  }
+  $x++;             # move to next command
+}
